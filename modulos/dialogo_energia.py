@@ -175,7 +175,6 @@ class ControladorVozEnergia:
                     mensagem = "O sensor indica condição escura conforme a calibração."
                 if m["persistencia_s"] is not None:
                     mensagem += f" Claridade observada nesta condição por {m['persistencia_s']} segundos."
-                mensagem += " O LDR sozinho não comprova lâmpada ligada, ocupação ou consumo."
         elif intencao == "conversar":
             self._conversar(comando)
             return

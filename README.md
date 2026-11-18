@@ -4,7 +4,11 @@ Global Solution 2026.2 · CitizenTech · Engenharia de Software 4ES · Maker Lab
 
 ## Vídeo de demonstração
 
-**Link do vídeo:** _Adicione aqui o link da gravação._
+**Link do vídeo:** [Assistir à demonstração no YouTube](https://youtu.be/SdQ7Z2nEwPw).
+
+Demonstração de bancada com LDR físico: configuração do expediente por voz,
+consultas de iluminação, aviso autônomo com LEDs e movimento da cabeça e
+explicação do último alerta registrado.
 
 ## Ficha técnica do MVP
 
@@ -148,10 +152,10 @@ Sem calibração, o monitor não deve interpretar claro/escuro.
 
 ## Executar
 
-Execução principal com microfone e síntese offline:
+Execução principal com microfone e a voz masculina original do MADARA:
 
 ```powershell
-python maker_lab.py --voz --microfone --voz-motor pyttsx3
+python maker_lab.py --voz --microfone --voz-motor edge
 ```
 
 | Comando | Finalidade |
@@ -168,8 +172,14 @@ Use **Ctrl+C** para encerrar e liberar recursos. O monitor e o teste de
 hardware devem usar a porta serial separadamente. `ARDUINO_PORTA` permite
 selecioná-la quando a detecção automática não encontrar a placa.
 
-`--voz-motor pyttsx3` torna a síntese offline. O reconhecimento do microfone
-continua usando Google e precisa de internet; Groq também requer conexão.
+A voz original usa `edge-tts`, com `pt-BR-AntonioNeural`, tom `-20Hz` e
+velocidade `+10%`, e precisa de internet. Esses ajustes podem ser definidos
+por `EDGE_VOICE`, `EDGE_PITCH` e `EDGE_RATE` no `.env`. Se a síntese online
+falhar, o robô usa a voz offline instalada no sistema, que pode ser feminina.
+`--voz-motor pyttsx3` força essa voz offline, sem tentar a voz original.
+Sem `--voz-motor`, vale `VOZ_MOTOR` (padrão `auto`, que tenta a voz original).
+O reconhecimento do microfone usa Google e precisa de internet; Groq também
+requer conexão.
 Durante silêncio, o microfone permanece aberto entre as esperas internas e
 “Ouvindo…” aparece uma vez por sessão. A captura pausa ao processar uma frase
 e durante a reprodução, com proteção contra reconhecer a própria fala.
@@ -184,6 +194,7 @@ e durante a reprodução, com proteção contra reconhecer a própria fala.
 | “Mostrar resumo de energia.” | Estado, ocorrências e eventual espera entre avisos |
 | “Quanto custou essa ocorrência?” | Estimativa calculada localmente ou indisponibilidade |
 | “Como posso economizar energia no estoque?” | Consultor especializado, com contexto pertinente |
+| “O que é o LDR?” | Explicação do sensor pelo consultor de energia |
 | “Configurar horário de funcionamento.” | Diálogo de abertura/fechamento com confirmação |
 | “Qual é o horário de funcionamento configurado?” | Consulta local do expediente |
 | “Pausar monitoramento.” / “Retomar monitoramento.” | Controla a avaliação, mantendo a coleta |

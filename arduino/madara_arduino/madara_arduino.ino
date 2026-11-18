@@ -26,8 +26,8 @@
  *   Motor        : OUT1 e OUT2 da ponte H
  *   LED vermelho : pino 9  -> resistor de 220 ohms -> LED -> GND
  *   LED azul     : pino 10 -> resistor de 220 ohms -> LED -> GND
- *   LDR analógico: divisor resistivo ou AO -> A0 (ver README)
- *   DO no pino 8 é opcional e mantido apenas para compatibilidade
+ *   Montagem atual: módulo LDR, VCC -> 5V, GND -> GND, DO -> pino 8
+ *   Alternativa analógica: divisor resistivo ou AO -> A0 (ver README)
  *
  * Os LEDs usam os pinos 9 e 10 porque precisam de PWM (analogWrite) para
  * acender gradualmente. No Uno só os pinos 3, 5, 6, 9, 10 e 11 têm PWM;

@@ -82,5 +82,6 @@ class ComandosTest(unittest.TestCase):
         self.a.processar_comando("Há quanto tempo a luz está acesa?")
         frase = self.a.voz.falar.call_args.args[0]
         self.assertIn("12 segundos", frase)
-        self.assertIn("não comprova", frase)
+        self.assertIn("O sensor indica claridade fora do expediente.", frase)
+        self.assertNotIn("O LDR sozinho não comprova lâmpada ligada, ocupação ou consumo.", frase)
         self.a.utils.previsao_tempo.assert_not_called()

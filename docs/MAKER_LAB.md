@@ -11,16 +11,16 @@ A tabela distingue exigência acadêmica, plano da equipe e decisão desta imple
 | Oficial, p. 20 | Ficha Técnica no início do README/documentação | Ficha no README; este documento detalha seu componente físico |
 | Oficial, p. 54–55 | Evoluir robô, sensor adicional, IA interpretando dados e resposta contextualizada | Uno/corpo existentes, LDR digital ou analógico, operação específica de `IAGenerativa` |
 | Oficial, p. 55–57 | TinyML, voz, LLMs e exemplos de sensores são possibilidades | Escolhida LLM no PC/nuvem; não há obrigação de TinyML no Uno |
-| Oficial, p. 58 | GitHub com instalação, componentes e integração; vídeo de até 6 min; nomes no README | Código/documentação entregues; vídeo físico continua pendente |
-| Oficial, p. 59 | Sensor, IA, integração, CitizenTech, autonomia, acabamento, testes/falhas e criatividade | Testes de software; montagem/qualidade de IA e acabamento precisam de prova física |
+| Oficial, p. 58 | GitHub com instalação, componentes e integração; vídeo de até 6 min; nomes no README | Código, instruções e integrantes no repositório; vídeo físico vinculado no README |
+| Oficial, p. 59 | Sensor, IA, integração, CitizenTech, autonomia, acabamento, testes/falhas e criatividade | Testes de software e demonstração de bancada; o vídeo mostra sensor, interação, alerta, LEDs e cabeça |
 | Guia, seções 1 e 11 | Iluminação de comércio, LDR com horário ou PIR, aviso e registro | Escolhido horário, estoque com pouca luz natural; PIR fora do MVP |
 | Guia, seção 3 | IDs, evento JSONL e fórmula de custo | Mesmo contrato exportável; custo sem parâmetros fica pendente localmente |
 | Implementação/solicitação | DO→8 ou A0 conforme montagem, telemetria, filas, histerese, tempos, contingência | Valores e políticas configuráveis documentados; não são exigências textuais da disciplina |
 
 O exemplo de aviso do guia menciona estoque vazio. Ele não é repetido aqui:
 a ausência de pessoas não é medida. O guia sugere desconectar sensor como falha;
-uma entrada analógica solta pode continuar dentro de 0..1023. Demonstra-se perda
-de comunicação USB e indisponibilidade de IA, sem prometer diagnóstico elétrico do LDR.
+uma entrada analógica solta pode continuar dentro de 0..1023. Os testes cobrem perda
+de comunicação e indisponibilidade de IA, sem prometer diagnóstico elétrico do LDR.
 O enunciado e a orientação do professor prevalecem sobre o guia.
 
 ## Montagem confirmada pela equipe
@@ -302,6 +302,10 @@ estoque/ambiente recebe snapshot atual com loja, condição, idade, disponibilid
 e expediente, sem credenciais ou envio indiscriminado do histórico. Fora do
 escopo é recusado; pedidos de intervenção recebem encaminhamento profissional.
 Essas barreiras conservadoras não comprovam qualidade semântica de toda resposta.
+Perguntas conceituais como “o que é o LDR?” são encaminhadas ao consultor,
+enquanto “como está a iluminação?” continua sendo consulta local. O prompt
+também distingue o encerramento do expediente da necessidade contínua de
+conservação de produtos refrigerados.
 
 O diálogo ocupa o laço de comandos, sem depender da trava do monitor para
 capturar, sintetizar ou consultar IA. A reserva `Voz.dialogo()` adia apenas
@@ -309,7 +313,21 @@ novos avisos falados; serial, avaliador e registro seguem. Na saída da reserva,
 o aviso é revalidado e cancelado se o episódio terminou. A fila de reprodução
 continua única, com exclusão entre microfone e áudio e pausa acústica.
 
-A implementação e os testes não comprovam montagem, precisão do LDR, qualidade
-da LLM real, isolamento óptico/acústico ou robustez do motor. Testar com o sensor
-real na posição final, com olhos/cabeça em uso e com o USB desconectado, e gravar
-o vídeo. Não foi realizado upload de firmware nem publicação de código.
+A demonstração física vinculada no README mostra configuração do expediente,
+respostas do consultor, claridade/escuro, aviso autônomo com indicação de IA,
+LEDs, movimento da cabeça e consulta ao alerta encerrado. Ela não inclui ensaio
+de perda de comunicação ou iluminação durante o expediente.
+
+Para repetir as verificações sem hardware, áudio, internet ou chamadas pagas:
+
+```powershell
+python -m unittest discover -s tests -v
+python maker_lab.py --demonstracao --pasta tmp/ensaio-final
+```
+
+A simulação é identificada como tal e mantém custo desconhecido em pendências.
+Ela usa pasta separada para preservar o histórico físico e o expediente salvo.
+Os testes não medem precisão do LDR, isolamento óptico/acústico ou robustez
+mecânica. Esses aspectos exigem ensaios na posição final, com olhos/cabeça em
+uso e recuperação após perda do USB. Verificação de compilação não grava
+firmware na placa.

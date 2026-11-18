@@ -37,6 +37,9 @@ def intencao_energia(texto):
     if (re.search(r"\b(energia|iluminacao|luminosidade|luz|luzes|ldr|estoque|ambiente|ocorrencia)\b", t)
             and re.search(r"como esta|como estao|qual.*estado|status|quanto tempo|quantas horas|ha quanto|ler |testar |devo desligar|devo apagar", t)):
         return "consulta"
+    if re.search(r"\b(?:o que (?:e|sao)|para que (?:serve|servem)|como (?:funciona|funcionam))\b.*"
+                 r"\b(?:ldr|sensor(?:es)? de (?:luz|luminosidade|iluminacao))\b", t):
+        return "conversar"
     if re.search(r"\b(energia|consumo|potencia|economizar|economia|eficiencia|reduzir|dicas|tarifas?|bandeiras?|eletric[ao]s?|"
                  r"eletricidade|disjuntor|fiacao|tomadas?|circuitos?|fios?|quadro eletrico|fase|neutro|aterramento|chuveiro|lampadas?|led|refrigeracao|geladeira|freezer|solar)\b|"
                  r"ar condicionado|consultor de energia", t):

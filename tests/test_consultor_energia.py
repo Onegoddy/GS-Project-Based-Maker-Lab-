@@ -103,6 +103,21 @@ class InterfaceConsultorTest(unittest.TestCase):
         self.assertNotIn("parametros", contexto)
         self.assertIn("Informação geral", self.voz.frases[-1])
 
+    def test_perguntas_sobre_o_ldr_consultam_conceito_em_vez_do_estado_atual(self):
+        self.atualizar(1, 0)
+        controle = self.controle()
+        resposta = {"tipo": "informacao_geral", "resposta":
+            "O LDR é um sensor cuja resistência varia com a luz. Neste projeto, ajuda a observar a iluminação."}
+        self.ia.responder_energia.return_value = resposta
+        for pergunta in ("o que é o LDR?", "o que é um LDR?",
+                         "para que serve o sensor de luminosidade?", "como funciona um LDR?"):
+            with self.subTest(pergunta=pergunta):
+                self.ia.responder_energia.reset_mock()
+                controle.processar_fala("Madara, " + pergunta)
+                self.ia.responder_energia.assert_called_once()
+                self.assertIn("resistência varia com a luz", self.voz.frases[-1])
+                self.assertNotIn("condição escura", self.voz.frases[-1])
+
     def test_pergunta_geral_recebe_so_limites(self):
         c = self.controle()
         c.processar_fala("Madara, explique tarifas de energia")
