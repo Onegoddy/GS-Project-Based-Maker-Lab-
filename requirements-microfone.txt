@@ -1,0 +1,4 @@
+# Maker Lab com comandos por microfone, sem instalar câmera/reconhecimento facial.
+-r requirements-maker.txt
+SpeechRecognition>=3.10
+PyAudio>=0.2.14

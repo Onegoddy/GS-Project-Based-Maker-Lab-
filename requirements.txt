@@ -22,8 +22,7 @@ PyAudio>=0.2.14           # acesso ao microfone (necessário para o sr.Microphon
 
 # --- Síntese de voz (Text-to-Speech) ---
 pyttsx3>=2.90            # TTS offline (voz principal)
-gTTS>=2.5               # TTS online (alternativa)
-pygame>=2.6             # reprodução do áudio do gTTS
+pygame>=2.6             # reprodução do áudio gerado pelo edge-tts
 
 # --- Visão computacional / reconhecimento facial ---
 opencv-contrib-python>=4.11,<5.0   # inclui o módulo cv2.face (Eigenfaces)
@@ -51,3 +50,6 @@ Pillow>=10.0             # o pyscreeze (print de tela) precisa, mas não declara
 # --- macOS: bindings nativos exigidos pelo pyttsx3 (NSSpeechSynthesizer)
 #     e pelo pyautogui (Quartz). Ignorado no Windows/Linux. ---
 pyobjc>=10.0 ; sys_platform == "darwin"
+
+# Monitor analógico e testes usam a biblioteca padrão e pyserial acima.
+# Instalação menor, com voz sem microfone: requirements-maker.txt.

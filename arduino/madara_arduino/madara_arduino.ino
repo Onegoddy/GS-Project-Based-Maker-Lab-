@@ -15,6 +15,9 @@
  *   'o' -> apaga os dois LEDs     'P' -> para e volta a cabeça ao centro
  *   'V' -> só o LED vermelho      (Sharingan)
  *   'A' -> só o LED azul          (Rinnegan)
+ *   'L' -> consulta digital legada (LUZ:0/1 no pino 8)
+ *   'H' -> repete versão/capacidades
+ *   Telemetria automática: TEL:LDR:<adc 0..1023>:<millis>\n
  *
  * Ligações (Arduino Uno):
  *   Ponte H  ENA : pino 3  (velocidade, por PWM)
@@ -23,6 +26,8 @@
  *   Motor        : OUT1 e OUT2 da ponte H
  *   LED vermelho : pino 9  -> resistor de 220 ohms -> LED -> GND
  *   LED azul     : pino 10 -> resistor de 220 ohms -> LED -> GND
+ *   LDR analógico: divisor resistivo ou AO -> A0 (ver README)
+ *   DO no pino 8 é opcional e mantido apenas para compatibilidade
  *
  * Os LEDs usam os pinos 9 e 10 porque precisam de PWM (analogWrite) para
  * acender gradualmente. No Uno só os pinos 3, 5, 6, 9, 10 e 11 têm PWM;
@@ -51,6 +56,10 @@ const int PINO_PONTE_H_IN1 = 4;
 const int PINO_PONTE_H_IN2 = 5;
 const int PINO_LED_VERMELHO = 9;
 const int PINO_LED_AZUL = 10;
+const int PINO_SENSOR_LUZ = 8;
+const int PINO_LDR_ANALOGICO = A0;  // livre na base anterior
+const unsigned long INTERVALO_LDR_MS = 500;
+unsigned long ultimaLeituraLdr = 0;
 
 // ----------------------------- Cabeça ----------------------------------
 // Velocidade do motor, de 0 a 255 (PWM no ENA). Se o motor só zumbir e
@@ -102,17 +111,15 @@ void setup() {
   pinMode(PINO_PONTE_H_IN2, OUTPUT);
   pinMode(PINO_LED_VERMELHO, OUTPUT);
   pinMode(PINO_LED_AZUL, OUTPUT);
+  pinMode(PINO_SENSOR_LUZ, INPUT);
+  pinMode(PINO_LDR_ANALOGICO, INPUT);
 
   frearMotor();
   analogWrite(PINO_LED_VERMELHO, 0);
   analogWrite(PINO_LED_AZUL, 0);
 
   Serial.begin(9600);
-  // Avisa o Python que terminou de ligar (ver Arduino._aguardar_pronto).
-  // O "v2" avisa o Python que esta versão sabe acender cada LED sozinho
-  // ('V' e 'A'). Com o sketch antigo, que manda só "PRONTO", o Python acende
-  // os dois LEDs no lugar.
-  Serial.println("PRONTO v2");
+  anunciarCapacidades();
 }
 
 void loop() {
@@ -124,8 +131,22 @@ void loop() {
   lerComandos();
   atualizarOlhos();
   atualizarCabeca();
+  atualizarLdr();
 }
 
+void anunciarCapacidades() {
+  Serial.println("PRONTO v4 CAPS=LEDS_SEPARADOS,LDR_ANALOGICO,LUZ_DIGITAL");
+}
+
+void atualizarLdr() {
+  unsigned long agora = millis();
+  if (agora - ultimaLeituraLdr < INTERVALO_LDR_MS) return;
+  ultimaLeituraLdr = agora;  // subtração unsigned suporta rollover de millis
+  Serial.print("TEL:LDR:");
+  Serial.print(analogRead(PINO_LDR_ANALOGICO));
+  Serial.print(':');
+  Serial.println(agora);
+}
 
 // Lê todos os caracteres que chegaram pela serial e executa cada um.
 void lerComandos() {
@@ -149,6 +170,13 @@ void lerComandos() {
     }
     else if (comando == 'P') {
       voltarAoCentro();
+    }
+    else if (comando == 'L') {
+      Serial.print("LUZ:");
+      Serial.println(digitalRead(PINO_SENSOR_LUZ));
+    }
+    else if (comando == 'H') {
+      anunciarCapacidades();
     }
     // Qualquer outro caractere (como '\n') é ignorado.
   }

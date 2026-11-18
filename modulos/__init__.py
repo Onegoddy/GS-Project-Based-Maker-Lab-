@@ -8,23 +8,37 @@ Reúne as classes responsáveis por cada funcionalidade da assistente:
     - IAGenerativa         -> integração com LLMs (Groq na nuvem / Ollama local)
     - Utilidades           -> hora, data, cálculos, cotações, clima, etc.
     - JogoDaVelha          -> mini-game jogado por voz
-    - Arduino              -> olhos (LEDs) e cabeça (servo) do boneco
+    - Arduino              -> olhos, cabeça (motor DC) e sensor de luz
+
+As classes são importadas sob demanda. Assim, scripts de Arduino não
+precisam das bibliotecas de voz, câmera ou IA para iniciar.
 """
 
-from .voz import Voz
-from .agenda import Agenda
-from .reconhecimento_facial import ReconhecimentoFacial
-from .ia_generativa import IAGenerativa
-from .utilidades import Utilidades
-from .jogo_da_velha import JogoDaVelha
-from .arduino import Arduino
+from importlib import import_module
 
-__all__ = [
-    "Voz",
-    "Agenda",
-    "ReconhecimentoFacial",
-    "IAGenerativa",
-    "Utilidades",
-    "JogoDaVelha",
-    "Arduino",
-]
+_MODULOS = {
+    "Voz": "voz",
+    "Agenda": "agenda",
+    "ReconhecimentoFacial": "reconhecimento_facial",
+    "IAGenerativa": "ia_generativa",
+    "Utilidades": "utilidades",
+    "JogoDaVelha": "jogo_da_velha",
+    "Arduino": "arduino",
+    "IAIluminacao": "ia_iluminacao",
+    "MonitorEnergia": "energia",
+    "ServicoMonitoramento": "monitoramento_energia",
+    "RegistroEnergia": "eventos",
+    "ControladorVozEnergia": "dialogo_energia",
+}
+
+__all__ = list(_MODULOS)
+
+
+def __getattr__(nome: str):
+    """Preserva 'from modulos import Arduino' sem carregar as outras classes."""
+    if nome not in _MODULOS:
+        raise AttributeError(f"O módulo {__name__!r} não possui o atributo {nome!r}")
+    modulo = import_module(f".{_MODULOS[nome]}", __name__)
+    classe = getattr(modulo, nome)
+    globals()[nome] = classe
+    return classe

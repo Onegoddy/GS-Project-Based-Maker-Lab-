@@ -1,14 +1,18 @@
 """
 ==========================================================================
   PROJETO M.A.D.A.R.A.  -  Assistente Virtual por Comandos de Voz
-  Checkpoint 4 - 2º semestre
+  GS 2026.2 - CitizenTech / Project-Based Maker Lab (evolução do CP4)
 ==========================================================================
 
-Arquivo principal. Contém a classe 'AssistenteMadara', que orquestra todos
-os módulos e implementa a REGRA DE OURO do desafio:
+Arquivo da interface por voz. Contém a classe 'AssistenteMadara', que
+orquestra os módulos e exige a palavra de ativação nos comandos de voz:
 
     >> Nenhum comando é executado sem antes o usuário falar o nome
        da assistente ("madara"). <<
+
+O monitoramento CitizenTech inicia junto da assistente e continua durante
+comandos, silêncio, consultas à IA e falas. Ctrl+C encerra todas as tarefas.
+Entrada alternativa sem dependências de voz/câmera: python maker_lab.py.
 
 Comandos suportados:
     1) "madara"                         -> ativa a assistente (palavra de ativação)
@@ -32,16 +36,18 @@ Execute com:  python madara.py
 """
 
 import random
+import re
 
 from modulos import (
     Arduino,
     Voz,
     Agenda,
-    ReconhecimentoFacial,
     IAGenerativa,
-    Utilidades,
-    JogoDaVelha,
 )
+from modulos.intencoes import intencao_energia, encerrar_assistente
+from modulos.config import obter_variavel
+from modulos.monitoramento_energia import ServicoMonitoramento
+from modulos.dialogo_energia import ControladorVozEnergia
 
 
 class AssistenteMadara:
@@ -89,6 +95,7 @@ class AssistenteMadara:
     )
 
     def __init__(self, nome: str = "madara"):
+        from modulos import ReconhecimentoFacial, Utilidades
         # Palavra de ativação (wake word). Só após ouvi-la a MADARA age.
         self.nome = nome.lower()
 
@@ -99,10 +106,11 @@ class AssistenteMadara:
         self.voz = Voz(arduino=self.arduino)
         self.agenda = Agenda()
         self.face = ReconhecimentoFacial()
-        self.ia = IAGenerativa(provedor="groq")  # troque para "ollama" se quiser local
+        self.ia = IAGenerativa(provedor=obter_variavel("MAKER_IA_PROVEDOR", "groq"))
         self.utils = Utilidades()
 
         self.ativa = True  # controla o laço principal
+        self.monitoramento = None
 
     # ------------------------------------------------------------------ #
     #  Laço principal
@@ -110,33 +118,43 @@ class AssistenteMadara:
     def executar(self) -> None:
         """Fica ouvindo continuamente e processa cada fala reconhecida."""
         try:
+            self.monitoramento = ServicoMonitoramento(self.arduino, self.voz).iniciar()
+            self.controle_energia = ControladorVozEnergia(self.monitoramento.monitor, self.voz, self.ia)
             self.voz.falar(
-                "Olá! Eu sou o MADARA. Diga 'madara' seguido de um comando "
-                "para começar."
+                "Olá! Eu sou o MADARA, do projeto Energia que dá Lucro. "
+                "O monitoramento de iluminação está ativo. Diga madara, como está a iluminação, "
+                "ou madara seguido de outro comando."
             )
             self._laco_principal()
         finally:
             # Roda até no Ctrl+C: apaga os olhos, centraliza a cabeça e
             # libera a porta serial para a próxima execução.
-            self.arduino.fechar()
+            try:
+                if self.monitoramento:
+                    self.monitoramento.fechar()
+            finally:
+                try:
+                    self.voz.fechar()
+                finally:
+                    self.arduino.fechar()
 
     def _laco_principal(self) -> None:
         """Ouve e processa falas até o comando de desligar."""
         while self.ativa:
-            fala = self.voz.ouvir()
+            fala = self.voz.ouvir(timeout=1)
 
             # Nada reconhecido: volta a ouvir.
             if not fala:
                 continue
 
             # REGRA DE OURO: só age se a palavra de ativação estiver presente.
-            if self.nome not in fala:
+            if not re.search(rf"\b{re.escape(self.nome)}\b", fala, re.IGNORECASE):
                 # Item 1: apenas imprime o texto reconhecido, sem executar nada.
                 print(f"(ignorado - sem palavra de ativação) Você disse: {fala}")
                 continue
 
             # Remove o nome da assistente para sobrar apenas o comando.
-            comando = fala.replace(self.nome, "").strip()
+            comando = re.sub(rf"\b{re.escape(self.nome)}\b", "", fala, flags=re.IGNORECASE).strip(" ,.!?")
             self.processar_comando(comando)
 
     # ------------------------------------------------------------------ #
@@ -145,8 +163,22 @@ class AssistenteMadara:
     def processar_comando(self, comando: str) -> None:
         """Identifica a intenção do comando e chama a ação correspondente."""
 
-        # --- Encerrar a assistente ---
-        if any(p in comando for p in ["desligar", "encerrar", "tchau", "adeus"]):
+        # Consulta local antes dos gatilhos genéricos e da IA.
+        if any(p in comando for p in (
+            "testar sensor de luminosidade", "testar o sensor de luminosidade",
+            "testar sensor de luz", "testar o sensor de luz",
+            "ler luminosidade", "ler o sensor de luminosidade",
+        )):
+            self.voz.falar(self.arduino.descrever_luminosidade())
+            return
+
+        intencao = intencao_energia(comando)
+        if intencao:
+            self._comando_energia(intencao, comando)
+            return
+
+        # A intenção de encerrar é explícita; perguntar sobre desligar luz não encerra.
+        if encerrar_assistente(comando):
             self.voz.falar("Até logo! Encerrando.")
             self.ativa = False
             return
@@ -245,6 +277,7 @@ class AssistenteMadara:
 
         # --- Item 10: jogo da velha ---
         if "jogo da velha" in comando or "jogar velha" in comando:
+            from modulos import JogoDaVelha
             JogoDaVelha(self.voz).jogar()
             return
 
@@ -254,6 +287,11 @@ class AssistenteMadara:
     # ------------------------------------------------------------------ #
     #  Ações auxiliares
     # ------------------------------------------------------------------ #
+    def _comando_energia(self, intencao, comando):
+        if not hasattr(self, "controle_energia"):
+            self.controle_energia = ControladorVozEnergia(self.monitoramento.monitor, self.voz)
+        self.controle_energia.processar_comando(comando, intencao)
+
     def _cadastrar_evento(self) -> None:
         """Pergunta o evento, ouve a resposta e grava no agenda.txt (item 2)."""
         self.voz.falar("Ok, qual evento devo cadastrar?")

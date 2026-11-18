@@ -13,8 +13,6 @@ A chave da Groq é lida da variável de ambiente GROQ_API_KEY para não
 expor segredos no código-fonte enviado ao GitHub.
 """
 
-import requests
-
 from .config import obter_variavel
 
 
@@ -43,6 +41,31 @@ class IAGenerativa:
             return self._responder_ollama(pergunta)
         return self._responder_groq(pergunta)
 
+    def analisar_iluminacao(self, contexto: dict, timeout_s: float = 10) -> dict:
+        """Operação contextual com prompt próprio, separada da personalidade antiga."""
+        from .ia_iluminacao import IAIluminacao
+        modelo = obter_variavel("MAKER_IA_MODELO") or (
+            self.modelo_groq if self.provedor == "groq" else self.modelo_ollama)
+        operacao = IAIluminacao(self.provedor, modelo=modelo, timeout_s=timeout_s)
+        self.ultima_execucao_iluminacao = None
+        try:
+            return operacao.analisar(contexto)
+        finally:
+            self.ultima_execucao_iluminacao = operacao.ultima_execucao
+
+    def diagnosticar_conexao(self, timeout_s: float = 10) -> dict:
+        from .ia_iluminacao import IAIluminacao
+        modelo = obter_variavel("MAKER_IA_MODELO") or (
+            self.modelo_groq if self.provedor == "groq" else self.modelo_ollama)
+        return IAIluminacao(self.provedor, modelo=modelo, timeout_s=timeout_s).diagnosticar_conexao()
+
+    def responder_energia(self, pergunta: str, contexto: dict, timeout_s: float = 10) -> dict:
+        """Conversa profissional própria; não compartilha os prompts de personagem ou de análise automática."""
+        from .consultor_energia import ConsultorEnergia
+        modelo = obter_variavel("MAKER_IA_MODELO") or (
+            self.modelo_groq if self.provedor == "groq" else self.modelo_ollama)
+        return ConsultorEnergia(self.provedor, modelo, timeout_s).responder(pergunta, contexto)
+
     # ------------------------------------------------------------------ #
     #  Provedor 1: Groq (nuvem)
     # ------------------------------------------------------------------ #
@@ -66,7 +89,7 @@ class IAGenerativa:
         try:
             from groq import Groq
 
-            cliente = Groq(api_key=chave)
+            cliente = Groq(api_key=chave, timeout=15, max_retries=0)
             resposta = cliente.chat.completions.create(
                 model=self.modelo_groq,
                 messages=[
@@ -84,6 +107,7 @@ class IAGenerativa:
     def _responder_ollama(self, pergunta: str) -> str:
         """Consulta um modelo rodando localmente via Ollama (porta 11434)."""
         try:
+            import requests
             resposta = requests.post(
                 "http://localhost:11434/api/generate",
                 json={

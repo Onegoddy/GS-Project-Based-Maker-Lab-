@@ -39,6 +39,11 @@ print_tela.png
 resposta_temp.mp3
 madara_fala.mp3
 agenda.txt
+dados/maker/
+tmp/
+
+# --- Apoio local para gravação; não incluir nos próximos commits ---
+/docs/ROTEIRO_DEMONSTRACAO.md
 
 # --- Lixo do sistema operacional ---
 # macOS

@@ -1,0 +1,8 @@
+# IA Maker usa HTTP da biblioteca padrão; Groq/Ollama não exigem SDK neste modo.
+# Monitor Maker Lab com alertas por voz. Sem microfone ou câmera.
+# python -m pip install -r requirements-maker.txt
+pyserial>=3.5
+pyttsx3>=2.90
+edge-tts>=7.3.1
+pygame>=2.6
+pyobjc>=10.0 ; sys_platform == "darwin"

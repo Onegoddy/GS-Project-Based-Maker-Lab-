@@ -1,221 +1,320 @@
-"""
-Módulo de integração com o ARDUINO da assistente M.A.D.A.R.A.
+"""Serial compartilhada: um único leitor, telemetria, LEDs e cabeça.
 
-Controla o "corpo" do boneco pela porta serial (USB):
-    - os dois LEDs dos OLHOS, que acendem sempre que o MADARA fala;
-    - o MOTOR DC da CABEÇA (ligado por uma ponte H), que gira em comandos
-      como "madara hashirama".
-
-Protocolo: um caractere por comando, a 9600 baud - o mesmo formato do
-'arduino_serial.ino' / 'teste_arduino.py' do professor, só que com mais
-comandos:
-
-    'O'  -> acende os olhos
-    'o'  -> apaga os olhos
-    'G'  -> começa a girar a cabeça (vai e volta até receber 'P')
-    'P'  -> para a cabeça e volta ao centro
-    'V'  -> acende só o LED vermelho (Sharingan)
-    'A'  -> acende só o LED azul (Rinnegan)
-
-Ao ligar, o Arduino envia a linha "PRONTO v2" (ver arduino/madara_arduino).
-Uma placa com o sketch antigo manda só "PRONTO" e não conhece 'V' nem 'A'.
-
-REGRA IMPORTANTE: o Arduino é OPCIONAL. Se a placa não estiver conectada,
-a assistente continua funcionando normalmente, só que sem os efeitos
-físicos. Nenhum método desta classe levanta erro para quem o chama.
-
-Teste rápido do hardware (sem precisar falar com a assistente):
-    python testar_arduino.py
+v4 anuncia capacidades e envia TEL:LDR:ADC:MILLIS a cada 500 ms.
+PRONTO/v2/v3 e consulta digital L continuam compatíveis com os efeitos antigos.
+Nenhum consumidor lê a porta: usam apenas o cache imutável de telemetria.
 """
 
+import re
+import math
 import threading
 import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from contextlib import contextmanager
-
 from .config import obter_variavel
 
 try:
     import serial
     from serial.tools import list_ports
-except ImportError:  # pyserial não instalado: a classe vira "modo sem Arduino"
-    serial = None
-    list_ports = None
+except ImportError:
+    serial = list_ports = None
 
-
-# Fabricantes de chip USB-serial usados nas placas Arduino e nos clones.
-# Identificar pelo VID (id do fabricante USB) evita abrir, por engano, portas
-# que não são o Arduino - como fones Bluetooth, que também aparecem como
-# porta serial no macOS e no Windows.
-FABRICANTES_USB = {
-    0x2341: "Arduino",
-    0x2A03: "Arduino",
-    0x1A86: "CH340 (clone)",
-    0x0403: "FTDI",
-    0x10C4: "CP210x",
-}
-
-# Plano B quando o VID não é reconhecido: nomes típicos de porta USB-serial.
+FABRICANTES_USB = {0x2341: "Arduino", 0x2A03: "Arduino", 0x1A86: "CH340 (clone)",
+                   0x0403: "FTDI", 0x10C4: "CP210x"}
 NOMES_TIPICOS = ("usbmodem", "usbserial", "wchusbserial", "ttyACM", "ttyUSB")
+PAUSA_INVERSAO_MS = 120
+AMPLITUDE_SKETCH_MS = 600
+BALANCO_PADRAO_MS = 60
 
-# Constantes do sketch que o balanço da cabeça precisa conhecer. Se mudar
-# lá no madara_arduino.ino, mude aqui também.
-PAUSA_INVERSAO_MS = 120    # freio do sketch antes de cada troca de sentido
-AMPLITUDE_SKETCH_MS = 600  # a partir daqui o próprio sketch inverteria sozinho
 
-# Balanço padrão da cabeça: quanto tempo o motor fica ligado do centro até
-# cada lado. Ajuste com 'python testar_arduino.py' e grave o valor escolhido
-# em ARDUINO_BALANCO_MS no .env.
-BALANCO_PADRAO_MS = 60  # testado no boneco: balanço visível sem forçar os fios
+@dataclass(frozen=True)
+class LeituraLDR:
+    bruto: int
+    instante: float
+    recebido_em: datetime
+    millis_placa: int | None
+    sequencia: int
+    tipo: str = "analogico"
 
 
 class Arduino:
-    """Envia comandos ao Arduino que controla os olhos e a cabeça do boneco."""
-
-    # Comandos do protocolo (precisam bater com o sketch .ino).
     OLHOS_ACENDER = b"O"
     OLHOS_APAGAR = b"o"
     OLHO_VERMELHO = b"V"
     OLHO_AZUL = b"A"
     CABECA_GIRAR = b"G"
     CABECA_PARAR = b"P"
+    SENSOR_LUZ_LER = b"L"
 
-    def __init__(self, porta: str | None = None, baudrate: int = 9600, ativo: bool = True):
-        """
-        Parâmetros:
-            porta    -> ex.: 'COM3' (Windows) ou '/dev/cu.usbmodem1101' (macOS).
-                        Se não for informada, usa ARDUINO_PORTA do .env e,
-                        em último caso, procura a placa automaticamente.
-            baudrate -> velocidade da serial; precisa ser a mesma do sketch.
-            ativo    -> False desliga a integração sem mexer no resto do código.
-        """
+    def __init__(self, porta=None, baudrate=9600, ativo=True, *, fabrica_serial=None,
+                 relogio=time.monotonic, reconexao_s=None, sensor_tipo=None):
         self.porta = porta or obter_variavel("ARDUINO_PORTA")
         self.baudrate = baudrate
+        self.sensor_tipo = sensor_tipo or obter_variavel("MAKER_SENSOR_TIPO", "analogico")
+        if self.sensor_tipo not in ("analogico", "digital"):
+            raise ValueError("MAKER_SENSOR_TIPO deve ser analogico ou digital.")
         self.serial = None
-        self.balanco_ms = int(obter_variavel("ARDUINO_BALANCO_MS", str(BALANCO_PADRAO_MS)))
-
-        # O balanço da cabeça manda comandos de uma thread separada, ao mesmo
-        # tempo em que a Voz acende e apaga os olhos. A trava impede que duas
-        # escritas na porta serial se misturem.
-        self._trava = threading.Lock()
-
-        # Só o sketch novo ("PRONTO v2") acende cada LED sozinho.
+        self.balanco_ms = int(obter_variavel("ARDUINO_BALANCO_MS", "60"))
+        self.nivel_luz_escuro = int(obter_variavel("ARDUINO_LUZ_ESCURO", "1"))
+        self.reconexao_s = float(reconexao_s or obter_variavel("ARDUINO_RECONEXAO_S", "5"))
+        self.sem_dados_s = float(obter_variavel("ARDUINO_SEM_DADOS_S", "10"))
+        if not (1 <= self.reconexao_s <= 300 and 3 <= self.sem_dados_s <= 300):
+            raise ValueError("Reconexão deve ser 1..300 s e sem dados 3..300 s.")
+        self._fabrica = fabrica_serial or (serial.Serial if serial else None)
+        self._relogio = relogio
+        self._trava = threading.RLock()
+        self._parar = threading.Event()
+        self._pronto = threading.Event()
+        self._thread = None
+        self._buffer = bytearray()
+        self._descartando = False
+        self._sequencia = 0
+        self._leitura = None
+        self._digital = None
+        self._digital_instante = None
+        self._leitura_digital = None
         self.leds_separados = False
-
+        self.sensor_luz_disponivel = False  # digital legado OU analógico
+        self.sensor_analogico_disponivel = False
+        self.capacidades = set()
+        self.versao = 0
+        self.linhas_invalidas = self.linhas_inesperadas = 0
+        self._status = None
         if ativo:
             self.conectar()
 
-    # ------------------------------------------------------------------ #
-    #  Conexão
-    # ------------------------------------------------------------------ #
     @property
-    def conectado(self) -> bool:
-        """Informa se existe uma conexão serial aberta com a placa."""
-        return self.serial is not None and self.serial.is_open
+    def conectado(self):
+        with self._trava:
+            return self.serial is not None and self.serial.is_open
 
-    def conectar(self) -> bool:
-        """Abre a porta serial. Retorna True se conectou."""
-        if serial is None:
-            print("[Arduino] Biblioteca 'pyserial' não instalada (pip install pyserial). "
-                  "Seguindo sem o Arduino.")
-            return False
+    @property
+    def ultima_leitura(self):
+        with self._trava:
+            return self._leitura
 
-        porta = self.porta or self.detectar_porta()
-        if not porta:
-            print("[Arduino] Nenhuma placa encontrada. Seguindo sem o Arduino.")
-            return False
+    @property
+    def ultima_leitura_valida(self):
+        leitura = self.ultima_leitura_sensor()
+        return leitura.instante if leitura else None
 
-        try:
-            self.serial = serial.Serial(porta, self.baudrate, timeout=0.1)
-        except (serial.SerialException, OSError) as erro:
-            print(f"[Arduino] Não consegui abrir a porta {porta}: {erro}. "
-                  "Seguindo sem o Arduino.")
-            self.serial = None
-            return False
+    def suporta_sensor(self, tipo=None):
+        tipo = tipo or self.sensor_tipo
+        if tipo == "analogico":
+            return self.sensor_analogico_disponivel
+        return self.versao == 3 or "LUZ_DIGITAL" in self.capacidades
 
-        self.porta = porta
-        pronto = self._aguardar_pronto()
-        if pronto is None:
-            print(f"[Arduino] Porta {porta} aberta, mas a placa não respondeu 'PRONTO'. "
-                  "Confira se o sketch madara_arduino.ino foi enviado para ela.")
-            return True
+    def ultima_leitura_sensor(self, tipo=None):
+        """Cache do sensor selecionado; DO jamais é convertido em ADC."""
+        with self._trava:
+            return self._leitura_digital if (tipo or self.sensor_tipo) == "digital" else self._leitura
 
-        print(f"[Arduino] Conectado em {porta}.")
-        self.leds_separados = b"v2" in pronto
-        if not self.leds_separados:
-            print("[Arduino] A placa está com o sketch antigo: o Sharingan e o "
-                  "Rinnegan vão acender os DOIS LEDs. Carregue a versão nova do "
-                  "madara_arduino.ino para cada um acender só a sua cor.")
-        return True
+    def obter_leitura(self, tipo=None, max_idade_s=3):
+        tipo = tipo or self.sensor_tipo
+        leitura = self.ultima_leitura_sensor(tipo)
+        if (not self.conectado or not self.suporta_sensor(tipo) or leitura is None
+                or self._relogio() - leitura.instante > max_idade_s):
+            return None
+        return leitura
 
-    def _aguardar_pronto(self, limite_segundos: float = 3.0) -> bytes | None:
-        """
-        Abrir a porta serial REINICIA o Arduino (o sinal DTR do USB dispara o
-        reset). Por ~2 segundos quem roda é o bootloader, e tudo que for
-        enviado nesse intervalo se perde.
+    def leitura_atual(self, max_idade_s=3):
+        return self.obter_leitura("analogico", max_idade_s)
 
-        O 'teste_arduino.py' do professor resolve com time.sleep(2). Aqui
-        esperamos a mensagem "PRONTO" que o sketch manda no setup(): é mais
-        rápido quando a placa sobe logo, e confiável quando ela demora.
+    def _avisar(self, status):
+        if status != self._status:
+            print(f"[Arduino] {status}")
+            self._status = status
 
-        Retorna a linha recebida (ex.: b"PRONTO v2"), ou None se não chegar.
-        """
-        fim = time.monotonic() + limite_segundos
-        while time.monotonic() < fim:
+    def conectar(self):
+        """Inicia um único leitor. Aguarda o handshake sem ler a porta aqui."""
+        if self._thread and self._thread.is_alive():
+            return self.conectado
+        self._parar.clear()
+        self._pronto.clear()
+        self._thread = threading.Thread(target=self._receber, name="arduino-serial", daemon=True)
+        self._thread.start()
+        self._pronto.wait(3.2)
+        return self.conectado
+
+    def _limpar_sessao(self):
+        self.leds_separados = self.sensor_luz_disponivel = False
+        self.sensor_analogico_disponivel = False
+        self.capacidades = set()
+        self.versao = 0
+        self._leitura = self._digital = self._digital_instante = None
+        self._leitura_digital = None
+        self._buffer.clear()
+        self._descartando = False
+
+    def _desconectar(self):
+        with self._trava:
+            placa, self.serial = self.serial, None
+            self._limpar_sessao()
+            if placa:
+                try:
+                    placa.close()
+                except (OSError, ValueError):
+                    pass
+
+    def _receber(self):
+        """Dono exclusivo de read; conexão/reconexão também pertencem a esta tarefa."""
+        while not self._parar.is_set():
+            if not self.conectado:
+                porta = self.porta or self.detectar_porta()
+                if not porta or self._fabrica is None:
+                    self._avisar("Indisponível; aguardando placa/pyserial (sem simulação).")
+                    self._pronto.set()
+                    self._parar.wait(self.reconexao_s)
+                    continue
+                try:
+                    placa = self._fabrica(porta, self.baudrate, timeout=0.1, write_timeout=1)
+                    with self._trava:
+                        self._limpar_sessao()
+                        self.serial = placa
+                    abertura = self._relogio()
+                    pedido_h = False
+                    proxima_digital = abertura
+                    self._avisar(f"Porta {porta} aberta; negociando firmware.")
+                except (OSError, ValueError):
+                    self._avisar("Porta indisponível; reconexão controlada.")
+                    self._pronto.set()
+                    self._parar.wait(self.reconexao_s)
+                    continue
             try:
-                linha = self.serial.readline()
-            except (serial.SerialException, OSError):
-                return None
-            if b"PRONTO" in linha:
-                return linha.strip()
-        return None
+                # read de 1 byte + os disponíveis evita esperar preencher um bloco.
+                dados = self.serial.read(max(1, min(256, self.serial.in_waiting)))
+                if dados:
+                    self._processar_bytes(dados)
+                agora = self._relogio()
+                if not pedido_h and agora - abertura >= 2:
+                    self._enviar(b"H")
+                    pedido_h = True
+                if agora - abertura >= 3:
+                    self._pronto.set()
+                if self.suporta_sensor("digital") and agora >= proxima_digital:
+                    self._enviar(b"L")
+                    proxima_digital = agora + 1
+                ultima = self.ultima_leitura_valida
+                # Uma placa silenciosa também pode ter perdido comunicação.
+                if agora - (ultima if ultima is not None else abertura) > self.sem_dados_s:
+                    # Firmware antigo sem stream continua útil para os efeitos.
+                    if self.suporta_sensor() or not self.versao:
+                        raise OSError("telemetria ausente")
+            except (OSError, ValueError, AttributeError):
+                self._avisar("Comunicação perdida ou sem telemetria; aguardando reconexão.")
+                self._desconectar()
+                self._pronto.set()
+                self._parar.wait(self.reconexao_s)
+        self._desconectar()
+
+    def _processar_bytes(self, dados):
+        """Framing limitado: fragmentos, CRLF, excesso e bytes inválidos."""
+        for byte in dados:
+            if byte == 10:
+                if not self._descartando:
+                    self._processar_linha(bytes(self._buffer).rstrip(b"\r"))
+                self._buffer.clear()
+                self._descartando = False
+            elif not self._descartando:
+                if len(self._buffer) >= 192:
+                    self._buffer.clear()
+                    self._descartando = True
+                    self.linhas_invalidas += 1
+                else:
+                    self._buffer.append(byte)
+
+    def _processar_linha(self, linha):
+        with self._trava:
+            pronto = re.fullmatch(rb"PRONTO(?: v(\d+))?(?: CAPS=([A-Z0-9_,]+))?", linha)
+            if pronto:
+                versao = int(pronto[1] or 1)
+                caps = set((pronto[2] or b"").decode("ascii").split(",")) - {""}
+                self.versao, self.capacidades = versao, caps
+                self.leds_separados = versao >= 2 or "LEDS_SEPARADOS" in caps
+                self.sensor_analogico_disponivel = "LDR_ANALOGICO" in caps
+                self.sensor_luz_disponivel = versao == 3 or self.sensor_analogico_disponivel or "LUZ_DIGITAL" in caps
+                self._pronto.set()
+                self._avisar(f"Firmware v{versao}; capacidades: {','.join(sorted(caps)) or 'legadas'}.")
+                return
+            telemetria = re.fullmatch(rb"TEL:LDR:(\d{1,4}):(\d{1,10})", linha)
+            if telemetria and self.sensor_analogico_disponivel:
+                bruto, uptime = int(telemetria[1]), int(telemetria[2])
+                if bruto <= 1023 and uptime <= 0xFFFFFFFF:
+                    self._sequencia += 1
+                    self._leitura = LeituraLDR(bruto, self._relogio(), datetime.now(timezone.utc),
+                                               uptime, self._sequencia)
+                    return
+            if linha in (b"LUZ:0", b"LUZ:1"):
+                self._digital = int(linha[-1:])
+                self._digital_instante = self._relogio()
+                self._sequencia += 1
+                self._leitura_digital = LeituraLDR(self._digital, self._digital_instante,
+                    datetime.now(timezone.utc), None, self._sequencia, tipo="digital")
+            elif linha.startswith((b"TEL:", b"LUZ:", b"PRONTO")):
+                self.linhas_invalidas += 1
+            elif linha:
+                self.linhas_inesperadas += 1
 
     @staticmethod
-    def detectar_porta() -> str | None:
-        """Procura uma porta que pareça ser um Arduino. Retorna None se não achar."""
+    def detectar_porta():
         if list_ports is None:
             return None
         portas = list(list_ports.comports())
-
-        # 1a tentativa: pelo fabricante do chip USB (mais confiável).
         for p in portas:
             if p.vid in FABRICANTES_USB:
                 return p.device
-
-        # 2a tentativa: pelo nome da porta.
         for p in portas:
             if any(nome in p.device for nome in NOMES_TIPICOS):
                 return p.device
         return None
 
-    def fechar(self) -> None:
-        """Deixa o boneco em repouso (olhos apagados, cabeça no centro) e desconecta."""
-        if not self.conectado:
-            return
-        self.apagar_olhos()
-        self.parar_cabeca()
-        try:
-            self.serial.flush()  # garante que os últimos comandos saíram
-            self.serial.close()
-        except (serial.SerialException, OSError):
-            pass
-        self.serial = None
-
-    def _enviar(self, comando: bytes) -> None:
-        """Envia um comando. Sem placa (ou se o cabo sair), apenas ignora."""
+    def _enviar(self, comando):
         with self._trava:
             if not self.conectado:
                 return
             try:
                 self.serial.write(comando)
-            except (serial.SerialException, OSError) as erro:
-                # Cabo desconectado no meio do uso: avisa uma vez e segue sem
-                # o Arduino, em vez de derrubar a assistente.
-                print(f"[Arduino] Conexão perdida ({erro}). Seguindo sem o Arduino.")
-                try:
-                    self.serial.close()
-                except (serial.SerialException, OSError):
-                    pass
-                self.serial = None
+            except (OSError, ValueError):
+                self._desconectar()
+                self._avisar("Comunicação perdida ou sem telemetria; aguardando reconexão.")
+
+    def fechar(self):
+        self._parar.set()
+        self.apagar_olhos()
+        self.parar_cabeca()
+        if self._thread:
+            self._thread.join(timeout=2)
+        self._desconectar()
+
+    def ler_luminosidade(self, limite_segundos=1.5):
+        """Compatibilidade: só consulta o cache, nunca lê/limpa a porta."""
+        if not self.conectado or not self.sensor_luz_disponivel:
+            return None
+        if self.sensor_tipo == "digital":
+            leitura = self.obter_leitura("digital")
+            return leitura.bruto if leitura else None
+        if self.sensor_analogico_disponivel:
+            leitura = self.leitura_atual()
+            return leitura.bruto if leitura else None
+        if self._digital_instante is not None and self._relogio() - self._digital_instante <= 3:
+            return self._digital
+        return None
+
+    def descrever_luminosidade(self):
+        if not self.conectado:
+            return "O Arduino está desconectado. A iluminação está indisponível."
+        if not self.sensor_luz_disponivel:
+            return "Firmware sem sensor anunciado. Carregue o sketch v4 para monitorar."
+        nivel = self.ler_luminosidade()
+        if nivel is None:
+            return "Sem leitura recente. Confira a comunicação com o Arduino."
+        if self.sensor_tipo == "analogico" and self.sensor_analogico_disponivel:
+            return f"Leitura bruta do LDR em A0: {nivel} de 1023. A interpretação exige calibração."
+        if self.sensor_tipo == "digital":
+            return f"Leitura digital DO no pino 8: {nivel}. A interpretação exige calibração de claro e escuro."
+        estado = "escuro" if nivel == self.nivel_luz_escuro else "claro"
+        return f"Sensor digital legado: {nivel}, ambiente {estado}. Se o sensor usa DO em 8, configure MAKER_SENSOR_TIPO=digital."
 
     # ------------------------------------------------------------------ #
     #  Olhos (LEDs)
@@ -270,7 +369,7 @@ class Arduino:
         self._enviar(self.CABECA_PARAR)
 
     @contextmanager
-    def cabeca_balancando(self, balanco_ms: int | None = None):
+    def cabeca_balancando(self, balanco_ms: int | None = None, *, duracao_max_s=None, condicao=None):
         """
         Balança a cabeça de um lado para o outro, com movimentos curtos,
         enquanto o bloco 'with' executa - sem dar voltas, para não torcer os
@@ -279,6 +378,9 @@ class Arduino:
         balanco_ms -> quanto tempo o motor fica ligado do centro até cada
                       lado (padrão: ARDUINO_BALANCO_MS do .env, ou 60).
                       Maior = balanço mais largo.
+
+        duracao_max_s -> limite opcional do gesto, mesmo se a fala continuar.
+        condicao      -> callback opcional para interromper um aviso resolvido.
 
         Cada balançada é um gesto completo, como um "não, não" de cabeça:
             centro -> direita -> esquerda -> centro (pausa breve) -> de novo
@@ -297,13 +399,15 @@ class Arduino:
         alguns milissegundos de variação, e como os movimentos alternam de
         sentido, esses erros não se cancelam - vão se somando, e numa fala
         longa o balanço ia "andando" para um dos lados. Parando no centro, que
-        o sketch conhece com exatidão, o erro de um gesto não passa para o
+        o sketch estima, o erro de um gesto não passa para o
         próximo.
         """
         balanco = balanco_ms if balanco_ms is not None else self.balanco_ms
         # Abaixo de ~10 ms o motor nem chega a vencer a inércia; acima de 400
         # ficaria perto demais do limite em que o sketch inverte por conta.
         balanco = max(10, min(400, int(balanco)))
+        if duracao_max_s is not None and (not math.isfinite(duracao_max_s) or duracao_max_s <= 0):
+            raise ValueError("A duração máxima do balanço deve ser positiva e finita.")
         parar = threading.Event()
 
         freio, folga = PAUSA_INVERSAO_MS, 40
@@ -320,21 +424,31 @@ class Arduino:
 
         def balancar():
             inicio = time.monotonic()
+            fim = inicio + duracao_max_s if duracao_max_s is not None else float("inf")
             numero = 0
-            while True:
-                comeco = inicio + numero * duracao_gesto / 1000
-                for instante_ms, comando in gesto:
-                    espera = comeco + instante_ms / 1000 - time.monotonic()
-                    if parar.wait(max(0.0, espera)):
-                        return
-                    self._enviar(comando)
-                numero += 1
+            try:
+                while not parar.is_set():
+                    comeco = inicio + numero * duracao_gesto / 1000
+                    for instante_ms, comando in gesto:
+                        alvo = comeco + instante_ms / 1000
+                        while True:
+                            agora = time.monotonic()
+                            if parar.is_set() or agora >= fim or (condicao is not None and not condicao()):
+                                return
+                            espera = alvo - agora
+                            if espera <= 0:
+                                break
+                            # Avalia cancelamento sem esperar acabar um trecho longo.
+                            parar.wait(min(espera, fim - agora, .05) if condicao is not None else min(espera, fim - agora))
+                        self._enviar(comando)
+                    numero += 1
+            finally:
+                self.parar_cabeca()  # também para ao atingir limite, sem esperar a fala
 
-        thread = threading.Thread(target=balancar, daemon=True)
+        thread = threading.Thread(target=balancar, name="arduino-cabeca", daemon=True)
         thread.start()
         try:
             yield
         finally:
             parar.set()
             thread.join()
-            self.parar_cabeca()  # o sketch leva a cabeça de volta ao centro
